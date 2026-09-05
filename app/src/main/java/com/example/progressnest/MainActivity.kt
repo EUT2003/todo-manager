@@ -4,6 +4,7 @@ import android.content.Context
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
+import androidx.activity.compose.BackHandler
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.spring
@@ -17,23 +18,29 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.*
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.zIndex
 import org.json.JSONArray
 import org.json.JSONObject
+import kotlin.math.roundToInt
 
 data class Goal(val id:Long,val content:String,val priority:String,val color:Long,val done:Boolean=false)
 data class SubProject(val id:Long,val name:String,val goals:List<Goal> = emptyList())
@@ -41,6 +48,7 @@ data class Project(val id:Long,val name:String,val color:Long,val goals:List<Goa
 enum class ThemeChoice { SYSTEM,LIGHT,DARK }
 enum class ItemKind { PROJECT,SUBPROJECT,GOAL }
 data class SelectedItem(val kind:ItemKind,val projectId:Long,val subId:Long?=null,val goalId:Long?=null)
+data class DragSession(val key:String,val group:String,val from:Int,val target:Int,val offset:Float,val extent:Float)
 
 private val colors=listOf(0xFF6750A4,0xFFE05D5D,0xFF2E8B78,0xFFD78635,0xFF3679C8,0xFFB65085)
 private fun Project.allGoals()=goals+children.flatMap{it.goals}
@@ -68,7 +76,8 @@ class MainActivity:ComponentActivity(){override fun onCreate(state:Bundle?){supe
     var deleting by remember{mutableStateOf(false)}
     var themeDialog by remember{mutableStateOf(false)}
     val opened=projects.firstOrNull{it.id==openedId}
-    Scaffold(topBar={TopAppBar(title={Column{Text(opened?.name?:"进度巢",fontWeight=FontWeight.Bold);Text(if(opened==null)"管理好每一个项目的进度" else "子项目与目标",fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)}},navigationIcon={if(opened!=null)IconButton(onClick={openedId=null}){Icon(Icons.Default.ArrowBack,"返回")}},actions={IconButton(onClick={themeDialog=true}){Icon(Icons.Default.Brightness6,"主题")}})},floatingActionButton={FloatingActionButton(onClick={create=if(opened==null)ItemKind.PROJECT to null else ItemKind.GOAL to opened.id;createSubId=null}){Icon(Icons.Default.Add,"创建")}}){pad->
+    BackHandler(enabled=opened!=null){openedId=null}
+    Scaffold(topBar={TopAppBar(title={Column{Text(opened?.name?:"进度巢",fontWeight=FontWeight.Bold);Text(if(opened==null)"管理好每一个项目的进度" else "子项目与目标",fontSize=12.sp,color=MaterialTheme.colorScheme.onSurfaceVariant)}},navigationIcon={if(opened!=null)IconButton(onClick={openedId=null}){Icon(Icons.AutoMirrored.Filled.ArrowBack,"返回")}},actions={IconButton(onClick={themeDialog=true}){Icon(Icons.Default.Brightness6,"主题")}})},floatingActionButton={if(opened==null)FloatingActionButton(onClick={create=ItemKind.PROJECT to null;createSubId=null}){Icon(Icons.Default.Add,"创建项目")}}){pad->
         if(opened==null)HomePage(projects,Modifier.padding(pad),{openedId=it},{selected=SelectedItem(ItemKind.PROJECT,it)}){id,step->update(projects.moveId(id,step){it.id})}
         else ProjectPage(opened,expanded,{id->expanded=if(id in expanded)expanded-id else expanded+id},{create=ItemKind.SUBPROJECT to opened.id;createSubId=null},{subId->create=ItemKind.GOAL to opened.id;createSubId=subId},{ref->selected=ref},{goalId,subId->update(projects.map{p->if(p.id!=opened.id)p else if(subId==null)p.copy(goals=p.goals.map{if(it.id==goalId)it.copy(done=!it.done)else it})else p.copy(children=p.children.map{s->if(s.id==subId)s.copy(goals=s.goals.map{if(it.id==goalId)it.copy(done=!it.done)else it})else s})})},{subId,step->update(projects.map{if(it.id==opened.id)it.copy(children=it.children.moveId(subId,step){s->s.id})else it})},{goalId,subId,step->update(projects.map{p->if(p.id!=opened.id)p else if(subId==null)p.copy(goals=p.goals.moveId(goalId,step){it.id})else p.copy(children=p.children.map{s->if(s.id==subId)s.copy(goals=s.goals.moveId(goalId,step){it.id})else s})})},Modifier.padding(pad))
     }
@@ -80,32 +89,26 @@ class MainActivity:ComponentActivity(){override fun onCreate(state:Bundle?){supe
 }
 
 @OptIn(ExperimentalFoundationApi::class)
-@Composable private fun HomePage(projects:List<Project>,modifier:Modifier,onOpen:(Long)->Unit,onLong:(Long)->Unit,onMove:(Long,Int)->Unit){val goals=projects.flatMap{it.allGoals()};LazyColumn(modifier.fillMaxSize(),contentPadding=PaddingValues(20.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){item{Card(colors=CardDefaults.cardColors(containerColor=MaterialTheme.colorScheme.primaryContainer),shape=RoundedCornerShape(24.dp)){Column(Modifier.fillMaxWidth().padding(22.dp)){Text("整体进度");Text("${goals.count{it.done}} / ${goals.size}",fontSize=38.sp,fontWeight=FontWeight.Bold);Text("已完成目标 · ${projects.size} 个项目正在推进")}};Text("我的项目",Modifier.padding(top=22.dp),fontSize=19.sp,fontWeight=FontWeight.Bold)};items(projects,key={it.id}){p->Card(Modifier.animateItem(placementSpec=spring()).fillMaxWidth().combinedClickable(onClick={onOpen(p.id)},onLongClick={onLong(p.id)}),shape=RoundedCornerShape(18.dp)){Row(Modifier.padding(16.dp),verticalAlignment=Alignment.CenterVertically){Icon(Icons.Default.Folder,null,tint=Color(p.color),modifier=Modifier.size(38.dp));Spacer(Modifier.width(14.dp));Column(Modifier.weight(1f)){Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween){Text(p.name,fontWeight=FontWeight.Bold);Text("${progress(p.allGoals())}%",color=Color(p.color),fontWeight=FontWeight.Bold)};Text("${p.children.size} 个子项目 · ${p.allGoals().size} 个目标",fontSize=12.sp);ProgressBar(progress(p.allGoals()),Color(p.color),MaterialTheme.colorScheme.surfaceVariant,Modifier.padding(top=8.dp))};ReorderHandle{onMove(p.id,it)}}}}}}
+@Composable private fun HomePage(projects:List<Project>,modifier:Modifier,onOpen:(Long)->Unit,onLong:(Long)->Unit,onMove:(Long,Int)->Unit){
+ var drag by remember{mutableStateOf<DragSession?>(null)};val gap=with(LocalDensity.current){12.dp.toPx()};val goals=projects.flatMap{it.allGoals()}
+ LazyColumn(modifier.fillMaxSize(),contentPadding=PaddingValues(20.dp),verticalArrangement=Arrangement.spacedBy(12.dp)){item{Card(colors=CardDefaults.cardColors(containerColor=MaterialTheme.colorScheme.primaryContainer)){Column(Modifier.fillMaxWidth().padding(22.dp)){Text("整体进度");Text("${goals.count{it.done}} / ${goals.size}",fontSize=38.sp,fontWeight=FontWeight.Bold);Text("已完成目标 · ${projects.size} 个项目正在推进")}};Text("我的项目",Modifier.padding(top=22.dp),fontSize=19.sp,fontWeight=FontWeight.Bold)};itemsIndexed(projects,key={_,p->p.id}){i,p->var h by remember(p.id){mutableIntStateOf(1)};val d=drag;val active=d?.key=="p${p.id}";val shift=if(d?.group=="projects")shift(i,d)else 0f;val y by animateFloatAsState(if(active)d?.offset?:0f else shift,spring(),label="p");Card(Modifier.animateItem(placementSpec=spring()).zIndex(if(active)2f else 0f).graphicsLayer{translationY=y}.onSizeChanged{h=it.height}.fillMaxWidth().combinedClickable(onClick={onOpen(p.id)},onLongClick={onLong(p.id)})){Row(Modifier.padding(16.dp),verticalAlignment=Alignment.CenterVertically){Icon(Icons.Default.Folder,null,tint=Color(p.color));Spacer(Modifier.width(14.dp));Column(Modifier.weight(1f)){Text(p.name,fontWeight=FontWeight.Bold);Text("${p.children.size} 个子项目 · ${p.allGoals().size} 个目标",fontSize=12.sp);ProgressBar(progress(p.allGoals()),Color(p.color),MaterialTheme.colorScheme.surfaceVariant)};DragHandle({drag=DragSession("p${p.id}","projects",i,i,0f,h+gap)},{drag=drag?.target(it,projects.size)},{val x=drag;drag=null;if(x!=null)onMove(p.id,x.target-x.from)})}}}}
+}
 
-@OptIn(ExperimentalFoundationApi::class)
 @Composable private fun ProjectPage(project:Project,expanded:Set<Long>,toggleExpand:(Long)->Unit,addSub:()->Unit,addGoal:(Long?)->Unit,onLong:(SelectedItem)->Unit,onToggle:(Long,Long?)->Unit,onMoveSub:(Long,Int)->Unit,onMoveGoal:(Long,Long?,Int)->Unit,modifier:Modifier){
-    LazyColumn(modifier.fillMaxSize(),contentPadding=PaddingValues(20.dp),verticalArrangement=Arrangement.spacedBy(10.dp)){
-        item{Card(colors=CardDefaults.cardColors(containerColor=Color(project.color))){Column(Modifier.fillMaxWidth().padding(20.dp)){Text("项目进度",color=Color.White);Text("${progress(project.allGoals())}%",fontSize=34.sp,fontWeight=FontWeight.Bold,color=Color.White);ProgressBar(progress(project.allGoals()),Color.White,Color.White.copy(alpha=.3f))}};Row(Modifier.fillMaxWidth().padding(top=18.dp),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically){Text("子项目",fontSize=18.sp,fontWeight=FontWeight.Bold);TextButton(onClick=addSub){Text("＋ 添加")}}}
-        project.children.forEach{sub->
-            item(key="s${sub.id}"){Box(Modifier.animateItem(placementSpec=spring())){SubProjectBlock(sub,sub.id in expanded,{toggleExpand(sub.id)},{addGoal(sub.id)},{onLong(SelectedItem(ItemKind.SUBPROJECT,project.id,sub.id))}){step->onMoveSub(sub.id,step)}}}
-            if(sub.id in expanded){items(sub.goals,key={"sg${sub.id}-${it.id}"}){g->Box(Modifier.animateItem(placementSpec=spring()).padding(start=18.dp)){GoalCard(g,{onToggle(g.id,sub.id)},{onLong(SelectedItem(ItemKind.GOAL,project.id,sub.id,g.id))}){step->onMoveGoal(g.id,sub.id,step)}}};if(sub.goals.isEmpty())item(key="empty${sub.id}"){Text("暂无目标",Modifier.padding(start=32.dp))}}
-        }
-        item{Row(Modifier.fillMaxWidth().padding(top=14.dp),horizontalArrangement=Arrangement.SpaceBetween,verticalAlignment=Alignment.CenterVertically){Text("直属目标",fontSize=18.sp,fontWeight=FontWeight.Bold);TextButton(onClick={addGoal(null)}){Text("＋ 添加")}}}
-        items(project.goals,key={"g${it.id}"}){g->Box(Modifier.animateItem(placementSpec=spring())){GoalCard(g,{onToggle(g.id,null)},{onLong(SelectedItem(ItemKind.GOAL,project.id,goalId=g.id))}){step->onMoveGoal(g.id,null,step)}}}
-    }
+ var drag by remember(project.id){mutableStateOf<DragSession?>(null)};val gap=with(LocalDensity.current){10.dp.toPx()}
+ LazyColumn(modifier.fillMaxSize(),contentPadding=PaddingValues(20.dp),verticalArrangement=Arrangement.spacedBy(10.dp)){item{Card(colors=CardDefaults.cardColors(containerColor=Color(project.color))){Column(Modifier.fillMaxWidth().padding(20.dp)){Text("项目进度",color=Color.White);Text("${progress(project.allGoals())}%",fontSize=34.sp,color=Color.White);ProgressBar(progress(project.allGoals()),Color.White,Color.White.copy(.3f))}};Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween){Text("子项目",fontSize=18.sp);TextButton(addSub){Text("＋ 添加")}}};project.children.forEachIndexed{i,sub->item(key="s${sub.id}"){DragRow("s${sub.id}","subs",i,project.children.size,drag,{drag=it},{step->onMoveSub(sub.id,step)},gap){start,move,end->SubProjectBlock(sub,sub.id in expanded,{toggleExpand(sub.id)},{addGoal(sub.id)},{onLong(SelectedItem(ItemKind.SUBPROJECT,project.id,sub.id))},start,move,end)}};if(sub.id in expanded)itemsIndexed(sub.goals,key={_,g->"sg${sub.id}${g.id}"}){j,g->DragRow("g${g.id}","sub${sub.id}",j,sub.goals.size,drag,{drag=it},{step->onMoveGoal(g.id,sub.id,step)},gap,Modifier.padding(start=18.dp)){start,move,end->GoalCard(g,{onToggle(g.id,sub.id)},{onLong(SelectedItem(ItemKind.GOAL,project.id,sub.id,g.id))},start,move,end)}}};item{Row(Modifier.fillMaxWidth(),horizontalArrangement=Arrangement.SpaceBetween){Text("直属目标",fontSize=18.sp);TextButton({addGoal(null)}){Text("＋ 添加")}}};itemsIndexed(project.goals,key={_,g->"g${g.id}"}){i,g->DragRow("g${g.id}","direct",i,project.goals.size,drag,{drag=it},{step->onMoveGoal(g.id,null,step)},gap){start,move,end->GoalCard(g,{onToggle(g.id,null)},{onLong(SelectedItem(ItemKind.GOAL,project.id,goalId=g.id))},start,move,end)}}}
 }
 
+@Composable private fun DragRow(key:String,group:String,index:Int,count:Int,drag:DragSession?,set:(DragSession?)->Unit,commit:(Int)->Unit,gap:Float,modifier:Modifier=Modifier,content: @Composable (() -> Unit, (Float) -> Unit, () -> Unit) -> Unit){var h by remember(key){mutableIntStateOf(1)};val gesture=remember(key){mutableStateOf<DragSession?>(null)};val active=drag?.key==key;val y by animateFloatAsState(if(active)drag?.offset?:0f else if(drag?.group==group)shift(index,drag)else 0f,spring(),label=key);Box(modifier.zIndex(if(active)2f else 0f).graphicsLayer{translationY=y}.onSizeChanged{h=it.height}){content({val d=DragSession(key,group,index,index,0f,h+gap);gesture.value=d;set(d)},{dy->val d=gesture.value?.target(dy,count)?:DragSession(key,group,index,index,0f,h+gap).target(dy,count);gesture.value=d;set(d)},{val d=gesture.value;gesture.value=null;set(null);if(d!=null)commit(d.target-d.from)})}}
 @OptIn(ExperimentalFoundationApi::class)
-@Composable private fun SubProjectBlock(sub:SubProject,isExpanded:Boolean,onExpand:()->Unit,onAdd:()->Unit,onLong:()->Unit,onMove:(Int)->Unit){Card(Modifier.fillMaxWidth().combinedClickable(onClick=onExpand,onLongClick=onLong)){Row(Modifier.padding(14.dp),verticalAlignment=Alignment.CenterVertically){Icon(if(isExpanded)Icons.Default.ExpandLess else Icons.Default.ExpandMore,null);Spacer(Modifier.width(8.dp));Column(Modifier.weight(1f)){Text(sub.name,fontWeight=FontWeight.Bold);Text("${sub.goals.size} 个目标 · ${progress(sub.goals)}%",fontSize=12.sp)};IconButton(onClick=onAdd){Icon(Icons.Default.Add,"添加目标")};ReorderHandle(onMove)}}}
-
+@Composable private fun SubProjectBlock(s:SubProject,open:Boolean,toggle:()->Unit,add:()->Unit,long:()->Unit,start:()->Unit,move:(Float)->Unit,end:()->Unit){Card(Modifier.fillMaxWidth().combinedClickable(onClick=toggle,onLongClick=long)){Row(Modifier.padding(14.dp),verticalAlignment=Alignment.CenterVertically){Icon(if(open)Icons.Default.ExpandLess else Icons.Default.ExpandMore,null);Column(Modifier.weight(1f)){Text(s.name);Text("${s.goals.size} 个目标 · ${progress(s.goals)}%",fontSize=12.sp)};IconButton(onClick=add){Icon(Icons.Default.Add,null)};DragHandle(start,move,end)}}}
 @OptIn(ExperimentalFoundationApi::class)
-@Composable private fun GoalCard(goal:Goal,onClick:()->Unit,onLong:()->Unit,onMove:(Int)->Unit){val bg=Color(goal.color).copy(alpha=.18f);Card(Modifier.fillMaxWidth().combinedClickable(onClick=onClick,onLongClick=onLong),colors=CardDefaults.cardColors(containerColor=bg)){Row(Modifier.padding(14.dp),verticalAlignment=Alignment.CenterVertically){Checkbox(goal.done,{onClick()},colors=CheckboxDefaults.colors(checkedColor=Color(goal.color)));Column(Modifier.weight(1f)){Text(goal.content,fontWeight=FontWeight.SemiBold,textDecoration=if(goal.done)TextDecoration.LineThrough else null);Text("${goal.priority}优先级",fontSize=12.sp,color=Color(goal.color))};ReorderHandle(onMove)}}
-}
-
+@Composable private fun GoalCard(g:Goal,click:()->Unit,long:()->Unit,start:()->Unit,move:(Float)->Unit,end:()->Unit){Card(Modifier.fillMaxWidth().combinedClickable(onClick=click,onLongClick=long),colors=CardDefaults.cardColors(containerColor=Color(g.color).copy(.18f))){Row(Modifier.padding(14.dp),verticalAlignment=Alignment.CenterVertically){Checkbox(g.done,{click()});Column(Modifier.weight(1f)){Text(g.content);Text("${g.priority}优先级",fontSize=12.sp)};DragHandle(start,move,end)}}}
+private fun DragSession.target(dy:Float,count:Int)=copy(offset=dy,target=(from+(dy/extent).roundToInt()).coerceIn(0,count-1))
+private fun shift(i:Int,d:DragSession)=when{d.target>d.from&&i in d.from+1..d.target->-d.extent;d.target<d.from&&i in d.target until d.from->d.extent;else->0f}
 @Composable private fun ProgressBar(value:Int,color:Color,track:Color,modifier:Modifier=Modifier){Box(modifier.fillMaxWidth().height(6.dp).clip(CircleShape).background(track)){Box(Modifier.fillMaxHeight().fillMaxWidth((value.coerceIn(0,100)/100f)).clip(CircleShape).background(color))}}
 
-@Composable private fun ReorderHandle(onMove:(Int)->Unit){var dragging by remember{mutableStateOf(false)};val scale by animateFloatAsState(if(dragging)1.35f else 1f,label="dragScale");var total=0f;Icon(Icons.Default.DragHandle,"上下拖动排序",tint=if(dragging)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.size(40.dp).padding(8.dp).graphicsLayer{scaleX=scale;scaleY=scale}.pointerInput(Unit){detectVerticalDragGestures(onDragStart={total=0f;dragging=true},onDragEnd={dragging=false},onDragCancel={dragging=false}){change,amount->change.consume();total+=amount;if(total>32f){onMove(1);total=0f}else if(total< -32f){onMove(-1);total=0f}}})}
-
+@Composable private fun DragHandle(start:()->Unit,move:(Float)->Unit,end:()->Unit){val startNow by rememberUpdatedState(start);val moveNow by rememberUpdatedState(move);val endNow by rememberUpdatedState(end);var active by remember{mutableStateOf(false)};Icon(Icons.Default.DragHandle,null,tint=if(active)MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurfaceVariant,modifier=Modifier.size(40.dp).padding(8.dp).pointerInput(Unit){var dy=0f;detectVerticalDragGestures(onDragStart={dy=0f;active=true;startNow()},onDragEnd={active=false;endNow()},onDragCancel={active=false;endNow()}){c,a->c.consume();dy+=a;moveNow(dy)}})}
 private fun <T> List<T>.moveId(id:Long,step:Int,key:(T)->Long):List<T>{val from=indexOfFirst{key(it)==id};if(from<0)return this;val to=(from+step).coerceIn(indices);if(from==to)return this;return toMutableList().apply{add(to,removeAt(from))}}
 
 @Composable private fun ItemActions(ref:SelectedItem,dismiss:()->Unit,edit:()->Unit,delete:()->Unit){val transparent=ListItemDefaults.colors(containerColor=Color.Transparent);AlertDialog(onDismissRequest=dismiss,title={Text(when(ref.kind){ItemKind.PROJECT->"管理项目";ItemKind.SUBPROJECT->"管理子项目";ItemKind.GOAL->"管理目标"})},text={Column{ListItem(headlineContent={Text("修改")},leadingContent={Icon(Icons.Default.Edit,null)},colors=transparent,modifier=Modifier.clickable(onClick=edit));ListItem(headlineContent={Text("删除",color=MaterialTheme.colorScheme.error)},leadingContent={Icon(Icons.Default.Delete,null,tint=MaterialTheme.colorScheme.error)},colors=transparent,modifier=Modifier.clickable(onClick=delete))}},confirmButton={})}
@@ -129,3 +132,4 @@ private fun Project.json()=JSONObject().put("id",id).put("name",name).put("color
 private fun JSONObject.goal()=Goal(getLong("id"),getString("content"),getString("priority"),getLong("color"),optBoolean("done"))
 private fun JSONObject.sub()=SubProject(getLong("id"),getString("name"),getJSONArray("goals").let{a->List(a.length()){a.getJSONObject(it).goal()}})
 private fun JSONObject.project()=Project(getLong("id"),getString("name"),getLong("color"),getJSONArray("goals").let{a->List(a.length()){a.getJSONObject(it).goal()}},getJSONArray("children").let{a->List(a.length()){a.getJSONObject(it).sub()}})
+
