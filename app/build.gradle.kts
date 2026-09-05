@@ -1,6 +1,6 @@
 plugins { id("com.android.application"); id("org.jetbrains.kotlin.android"); id("org.jetbrains.kotlin.plugin.compose") }
 android { namespace = "com.example.progressnest"; compileSdk = 35
-    defaultConfig { applicationId = "com.example.progressnest"; minSdk = 24; targetSdk = 35; versionCode = 10101; versionName = "v1.1.1" }
+    defaultConfig { applicationId = "com.example.progressnest"; minSdk = 24; targetSdk = 35; versionCode = 10102; versionName = "v1.1.2" }
     buildFeatures { compose = true }
     compileOptions { sourceCompatibility = JavaVersion.VERSION_17; targetCompatibility = JavaVersion.VERSION_17 }
 }
